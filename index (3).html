@@ -1,0 +1,209 @@
+<script type="text/javascript">
+        var gk_isXlsx = false;
+        var gk_xlsxFileLookup = {};
+        var gk_fileData = {};
+        function filledCell(cell) {
+          return cell !== '' && cell != null;
+        }
+        function loadFileData(filename) {
+        if (gk_isXlsx && gk_xlsxFileLookup[filename]) {
+            try {
+                var workbook = XLSX.read(gk_fileData[filename], { type: 'base64' });
+                var firstSheetName = workbook.SheetNames[0];
+                var worksheet = workbook.Sheets[firstSheetName];
+
+                // Convert sheet to JSON to filter blank rows
+                var jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, blankrows: false, defval: '' });
+                // Filter out blank rows (rows where all cells are empty, null, or undefined)
+                var filteredData = jsonData.filter(row => row.some(filledCell));
+
+                // Heuristic to find the header row by ignoring rows with fewer filled cells than the next row
+                var headerRowIndex = filteredData.findIndex((row, index) =>
+                  row.filter(filledCell).length >= filteredData[index + 1]?.filter(filledCell).length
+                );
+                // Fallback
+                if (headerRowIndex === -1 || headerRowIndex > 25) {
+                  headerRowIndex = 0;
+                }
+
+                // Convert filtered JSON back to CSV
+                var csv = XLSX.utils.aoa_to_sheet(filteredData.slice(headerRowIndex)); // Create a new sheet from filtered array of arrays
+                csv = XLSX.utils.sheet_to_csv(csv, { header: 1 });
+                return csv;
+            } catch (e) {
+                console.error(e);
+                return "";
+            }
+        }
+        return gk_fileData[filename] || "";
+        }
+        </script><!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live USA Presidential Election Map</title>
+    <script src="https://api.mapbox.com/mapbox-gl-js/v2.9.1/mapbox-gl.js"></script>
+    <link href="https://api.mapbox.com/mapbox-gl-js/v2.9.1/mapbox-gl.css" rel="stylesheet">
+    <style>
+        body { margin: 0; padding: 0; font-family: Arial, sans-serif; }
+        #map { position: absolute; top: 0; bottom: 0; width: 100%; }
+        #info { position: absolute; top: 10px; left: 10px; background: rgba(255, 255, 255, 0.8); padding: 10px; border-radius: 5px; }
+        #legend { position: absolute; bottom: 10px; right: 10px; background: rgba(255, 255, 255, 0.8); padding: 10px; border-radius: 5px; }
+        .legend-item { display: flex; align-items: center; margin-bottom: 5px; }
+        .legend-color { width: 20px; height: 20px; margin-right: 10px; display: inline-block; }
+        #totals { position: absolute; top: 10px; right: 10px; background: rgba(255, 255, 255, 0.8); padding: 10px; border-radius: 5px; }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+    <div id="info"></div>
+    <div id="legend">
+        <div class="legend-item"><span class="legend-color" style="background-color: #2A71AE;"></span>Democrat</div>
+        <div class="legend-item"><span class="legend-color" style="background-color: #B82D35;"></span>Republican</div>
+        <div class="legend-item"><span class="legend-color" style="background-color: #CCCCCC;"></span>Undecided</div>
+    </div>
+    <div id="totals">
+        <p>Democrat: <span id="democrat-total">0</span></p>
+        <p>Republican: <span id="republican-total">0</span></p>
+        <p>Undecided: <span id="undecided-total">0</span></p>
+    </div>
+
+    <script>
+        // Replace with your Mapbox access token
+        mapboxgl.accessToken = 'YOUR_MAPBOX_ACCESS_TOKEN';
+
+        // Initialize the map
+        const map = new mapboxgl.Map({
+            container: 'map',
+            style: 'mapbox://styles/mapbox/light-v10',
+            center: [-98, 39], // Center of the U.S.
+            zoom: 3
+        });
+
+        // State electoral votes (2024 values)
+        const electoralVotes = {
+            "Alabama": 9, "Alaska": 3, "Arizona": 11, "Arkansas": 6, "California": 54,
+            "Colorado": 10, "Connecticut": 7, "Delaware": 3, "District of Columbia": 3,
+            "Florida": 30, "Georgia": 16, "Hawaii": 4, "Idaho": 4, "Illinois": 19,
+            "Indiana": 11, "Iowa": 6, "Kansas": 6, "Kentucky": 8, "Louisiana": 8,
+            "Maine": 4, "Maryland": 10, "Massachusetts": 11, "Michigan": 15, "Minnesota": 10,
+            "Mississippi": 6, "Missouri": 10, "Montana": 4, "Nebraska": 5, "Nevada": 6,
+            "New Hampshire": 4, "New Jersey": 14, "New Mexico": 5, "New York": 28,
+            "North Carolina": 16, "North Dakota": 3, "Ohio": 17, "Oklahoma": 7,
+            "Oregon": 8, "Pennsylvania": 19, "Rhode Island": 4, "South Carolina": 9,
+            "South Dakota": 3, "Tennessee": 11, "Texas": 40, "Utah": 6, "Vermont": 3,
+            "Virginia": 13, "Washington": 12, "West Virginia": 4, "Wisconsin": 10, "Wyoming": 3
+        };
+
+        // Google Sheets API configuration
+        const GOOGLE_SHEET_ID = 'YOUR_GOOGLE_SHEET_ID';
+        const GOOGLE_API_KEY = 'YOUR_GOOGLE_API_KEY';
+        const SHEET_RANGE = 'Sheet1!A1:C52'; // Adjust range based on your sheet
+
+        // Fetch data from Google Sheets
+        async function fetchElectionData() {
+            const url = `https://sheets.googleapis.com/v4/spreadsheets/${GOOGLE_SHEET_ID}/values/${SHEET_RANGE}?key=${GOOGLE_API_KEY}`;
+            try {
+                const response = await fetch(url);
+                const data = await response.json();
+                const rows = data.values;
+                const electionData = {};
+
+                // Skip header row and map data
+                rows.slice(1).forEach(row => {
+                    const state = row[0];
+                    const winner = row[1] || 'Undecided';
+                    const votes = parseInt(row[2]) || electoralVotes[state] || 0;
+                    electionData[state] = { winner, votes };
+                });
+
+                return electionData;
+            } catch (error) {
+                console.error('Error fetching data:', error);
+                return {};
+            }
+        }
+
+        // Update map with election data
+        async function updateMap() {
+            const electionData = await fetchElectionData();
+
+            // Update electoral vote totals
+            let democratTotal = 0, republicanTotal = 0, undecidedTotal = 0;
+            Object.values(electionData).forEach(({ winner, votes }) => {
+                if (winner === 'Democrat') democratTotal += votes;
+                else if (winner === 'Republican') republicanTotal += votes;
+                else undecidedTotal += votes;
+            });
+
+            document.getElementById('democrat-total').textContent = democratTotal;
+            document.getElementById('republican-total').textContent = republicanTotal;
+            document.getElementById('undecided-total').textContent = undecidedTotal;
+
+            // Update map layer
+            if (map.getLayer('states-layer')) {
+                map.setPaintProperty('states-layer', 'fill-color', [
+                    'match',
+                    ['get', 'name'],
+                    ...Object.entries(electionData).flatMap(([state, { winner }]) => [
+                        state,
+                        winner === 'Democrat' ? '#2A71AE' : winner === 'Republican' ? '#B82D35' : '#CCCCCC'
+                    ]),
+                    '#CCCCCC' // Default color
+                ]);
+            }
+        }
+
+        // Load GeoJSON and add to map
+        map.on('load', async () => {
+            // Fetch U.S. states GeoJSON (simplified for example; use a real GeoJSON file in production)
+            const geojson = await fetch('https://raw.githubusercontent.com/PublicaMundi/MappingAPI/master/data/geojson/us-states.json').then(res => res.json());
+
+            map.addSource('states', {
+                type: 'geojson',
+                data: geojson
+            });
+
+            map.addLayer({
+                id: 'states-layer',
+                type: 'fill',
+                source: 'states',
+                paint: {
+                    'fill-color': '#CCCCCC',
+                    'fill-opacity': 0.8
+                }
+            });
+
+            map.addLayer({
+                id: 'states-borders',
+                type: 'line',
+                source: 'states',
+                paint: {
+                    'line-color': '#000000',
+                    'line-width': 1
+                }
+            });
+
+            // Initial map update
+            await updateMap();
+
+            // Hover effect
+            map.on('mousemove', 'states-layer', (e) => {
+                if (e.features.length > 0) {
+                    const stateName = e.features[0].properties.name;
+                    const votes = electoralVotes[stateName] || 0;
+                    document.getElementById('info').innerHTML = `<strong>${stateName}</strong><br>Electoral Votes: ${votes}`;
+                }
+            });
+
+            map.on('mouseleave', 'states-layer', () => {
+                document.getElementById('info').innerHTML = '';
+            });
+
+            // Poll for updates every 30 seconds
+            setInterval(updateMap, 30000);
+        });
+    </script>
+</body>
+</html>
